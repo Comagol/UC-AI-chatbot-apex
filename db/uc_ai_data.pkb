@@ -241,6 +241,25 @@ create or replace package body uc_ai_data as
   end render_conversation;
 
   -- -------------------------------------------------------------------------
+  -- c_make_msg: internal helper to build a UC AI message object.
+  -- UC_AI_GOOGLE requires content to be an array: [{type:"text", text:"..."}]
+  -- -------------------------------------------------------------------------
+  function c_make_msg (p_role in varchar2, p_text in clob)
+    return json_object_t
+  as
+    l_part    json_object_t := json_object_t();
+    l_content json_array_t  := json_array_t();
+    l_msg     json_object_t := json_object_t();
+  begin
+    l_part.put('type', 'text');
+    l_part.put('text', p_text);
+    l_content.append(l_part);
+    l_msg.put('role',    p_role);
+    l_msg.put('content', l_content);
+    return l_msg;
+  end c_make_msg;
+
+  -- -------------------------------------------------------------------------
   -- run_chatbot
   -- -------------------------------------------------------------------------
   procedure run_chatbot (
@@ -248,31 +267,49 @@ create or replace package body uc_ai_data as
     p_messages_json in out nocopy clob
   )
   as
-    l_messages json_array_t;
-    l_user_msg json_object_t := json_object_t();
-    l_ai_msg   json_object_t := json_object_t();
-    l_result   json_object_t;
-    l_response clob;
+    -- Display history uses simple {role, content:STRING} for render_conversation.
+    l_display   json_array_t;
+    l_disp_msg  json_object_t := json_object_t();
+    -- API history uses {role, content:[{type,text}]} as required by UC_AI_GOOGLE.
+    l_api       json_array_t  := json_array_t();
+    l_row       json_object_t;
+    l_result    json_object_t;
+    l_response  clob;
   begin
     if p_user_message is null then
       return;
     end if;
 
+    -- Parse or init display history
     if p_messages_json is not null and p_messages_json != '[]' then
-      l_messages := json_array_t.parse(p_messages_json);
+      l_display := json_array_t.parse(p_messages_json);
     else
-      l_messages := json_array_t();
+      l_display := json_array_t();
     end if;
 
-    l_user_msg.put('role', 'user');
-    l_user_msg.put('content', p_user_message);
-    l_messages.append(l_user_msg);
+    -- Append user message to display history
+    l_disp_msg := json_object_t();
+    l_disp_msg.put('role',    'user');
+    l_disp_msg.put('content', p_user_message);
+    l_display.append(l_disp_msg);
 
+    -- Build UC AI API messages (content as array) from display history
+    for i in 0 .. l_display.get_size - 1 loop
+      l_row := treat(l_display.get(i) as json_object_t);
+      l_api.append(
+        c_make_msg(
+          p_role => l_row.get_string('role'),
+          p_text => l_row.get_clob('content')
+        )
+      );
+    end loop;
+
+    -- Call UC AI with HR tools
     uc_ai.g_enable_tools := true;
     uc_ai.g_tool_tags    := apex_t_varchar2('hr');
 
     l_result := uc_ai.generate_text(
-      p_messages       => l_messages,
+      p_messages       => l_api,
       p_provider       => uc_ai.c_provider_google,
       p_model          => uc_ai_google.c_model_gemini_2_5_flash,
       p_max_tool_calls => 5
@@ -280,12 +317,18 @@ create or replace package body uc_ai_data as
 
     l_response := l_result.get_clob('final_message');
 
-    l_ai_msg.put('role', 'assistant');
-    l_ai_msg.put('content', l_response);
-    l_messages.append(l_ai_msg);
+    -- Append AI response to display history
+    l_disp_msg := json_object_t();
+    l_disp_msg.put('role',    'assistant');
+    l_disp_msg.put('content', l_response);
+    l_display.append(l_disp_msg);
 
-    p_messages_json := l_messages.to_clob;
+    p_messages_json := l_display.to_clob;
     p_user_message  := null;
+  exception
+    when others then
+      -- Surface the error to APEX as a user-visible message
+      raise_application_error(-20100, 'UC AI error: ' || sqlerrm);
   end run_chatbot;
 
 end uc_ai_data;
