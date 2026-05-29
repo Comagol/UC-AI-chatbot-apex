@@ -205,5 +205,88 @@ create or replace package body uc_ai_data as
     return nvl(l_result, '[]');
   end get_employee_hierarchy;
 
+  -- -------------------------------------------------------------------------
+  -- render_conversation
+  -- -------------------------------------------------------------------------
+  procedure render_conversation (p_messages_json in clob)
+  as
+    l_messages json_array_t;
+    l_msg      json_object_t;
+    l_role     varchar2(20);
+    l_content  clob;
+  begin
+    if p_messages_json is not null and p_messages_json != '[]' then
+      l_messages := json_array_t.parse(p_messages_json);
+      htp.p('<div class="uc-ai-conversation">');
+      for i in 0 .. l_messages.get_size - 1 loop
+        l_msg     := treat(l_messages.get(i) as json_object_t);
+        l_role    := l_msg.get_string('role');
+        l_content := l_msg.get_clob('content');
+        if l_role = 'user' then
+          htp.p('<div class="uc-ai-bubble uc-ai-user">');
+          htp.p('<span class="uc-ai-label">You</span>');
+          htp.p(apex_escape.html(l_content));
+          htp.p('</div>');
+        elsif l_role = 'assistant' then
+          htp.p('<div class="uc-ai-bubble uc-ai-bot">');
+          htp.p('<span class="uc-ai-label">AI Assistant</span>');
+          htp.p(apex_escape.html(l_content));
+          htp.p('</div>');
+        end if;
+      end loop;
+      htp.p('</div>');
+    else
+      htp.p('<div class="uc-ai-empty">Ask me anything about the HR data — employees, departments, salaries, or org structure.</div>');
+    end if;
+  end render_conversation;
+
+  -- -------------------------------------------------------------------------
+  -- run_chatbot
+  -- -------------------------------------------------------------------------
+  procedure run_chatbot (
+    p_user_message  in out nocopy varchar2,
+    p_messages_json in out nocopy clob
+  )
+  as
+    l_messages json_array_t;
+    l_user_msg json_object_t := json_object_t();
+    l_ai_msg   json_object_t := json_object_t();
+    l_result   json_object_t;
+    l_response clob;
+  begin
+    if p_user_message is null then
+      return;
+    end if;
+
+    if p_messages_json is not null and p_messages_json != '[]' then
+      l_messages := json_array_t.parse(p_messages_json);
+    else
+      l_messages := json_array_t();
+    end if;
+
+    l_user_msg.put('role', 'user');
+    l_user_msg.put('content', p_user_message);
+    l_messages.append(l_user_msg);
+
+    uc_ai.g_enable_tools := true;
+    uc_ai.g_tool_tags    := apex_t_varchar2('hr');
+
+    l_result := uc_ai.generate_text(
+      p_messages       => l_messages,
+      p_provider       => uc_ai.c_provider_google,
+      p_model          => uc_ai_google.c_model_gemini_2_5_flash,
+      p_max_tool_calls => 5
+    );
+
+    l_response := l_result.get_clob('final_message');
+
+    l_ai_msg.put('role', 'assistant');
+    l_ai_msg.put('content', l_response);
+    l_messages.append(l_ai_msg);
+
+    p_messages_json := l_messages.to_clob;
+    p_user_message  := null;
+  end run_chatbot;
+
 end uc_ai_data;
 /

@@ -1,7 +1,7 @@
 page 1 (
-    name: Home
-    alias: HOME
-    title: Home
+    name: UC AI Chatbot
+    alias: CHATBOT
+    title: UC AI HR Chatbot
     appearance {
         pageTemplate: @/standard
         templateOptions: #DEFAULT#
@@ -9,14 +9,25 @@ page 1 (
     navigation {
         cursorFocus: doNotFocusCursor
     }
+    css {
+        inline:
+            ```css
+            .uc-ai-conversation { padding: 8px 0; min-height: 60px; }
+            .uc-ai-bubble { margin-bottom: 12px; padding: 10px 14px; border-radius: 8px; max-width: 85%; line-height: 1.5; word-wrap: break-word; }
+            .uc-ai-user  { background: #e8f0fe; margin-left: auto; text-align: right; }
+            .uc-ai-bot   { background: #f1f3f4; margin-right: auto; }
+            .uc-ai-label { display: block; font-size: 0.75rem; font-weight: 700; margin-bottom: 4px; opacity: 0.65; }
+            .uc-ai-empty { color: #888; font-style: italic; padding: 16px 0; }
+            ```
+    }
     security {
         pageAccessProtection: argumentsMustHaveChecksum
         formAutoComplete: false
     }
 
-    region app-name (
-        name: Home
-        title: &APP_TITLE.
+    region breadcrumb-bar (
+        name: UC AI HR Chatbot
+        title: UC AI HR Chatbot
         type: staticContent
         layout {
             sequence: 10
@@ -26,10 +37,129 @@ page 1 (
             template: @/hero
             templateOptions: #DEFAULT#
         }
-        image {
-            fileUrl: #APP_FILES#icons/app-icon-512.png
+    )
+
+    region conversation-history (
+        name: Conversation
+        type: dynamicContent
+        layout {
+            sequence: 20
+            slot: body
+        }
+        appearance {
+            template: @/standard
+            templateOptions: #DEFAULT#
+        }
+        source {
+            plsqlFunctionBody:
+                ```plsql
+                uc_ai_data.render_conversation(:P1_MESSAGES_JSON);
+                ```
+        }
+    )
+
+    region send-message (
+        name: Ask a Question
+        type: staticContent
+        layout {
+            sequence: 30
+            slot: body
+        }
+        appearance {
+            template: @/standard
+            templateOptions: #DEFAULT#
+        }
+    )
+
+    pageItem P1_USER_MESSAGE (
+        type: textarea
+        label {
+            label: Your Question
+            alignment: above
+        }
+        layout {
+            sequence: 10
+            region: @send-message
+            slot: regionBody
+        }
+        appearance {
+            height: 80
+        }
+    )
+
+    pageItem P1_MESSAGES_JSON (
+        type: hidden
+        layout {
+            sequence: 20
+            region: @send-message
+            slot: regionBody
+        }
+        sessionState {
+            dataType: clob
+            storage: session
+        }
+    )
+
+    button send (
+        buttonName: SEND
+        label: Send
+        layout {
+            sequence: 30
+            region: @send-message
+            slot: next
+        }
+        appearance {
+            buttonTemplate: @/text-with-icon
+            hot: true
+            templateOptions: #DEFAULT#
+            icon: fa-paper-plane
+        }
+        behavior {
+            action: submitPage
+            warnOnUnsavedChanges: doNotCheck
+        }
+    )
+
+    process call-uc-ai (
+        name: Call UC AI with HR Tools
+        type: invokeApi
+        execution {
+            sequence: 10
+            point: processing
+        }
+        invoke {
+            package: UC_AI_DATA
+            procedureOrFunction: RUN_CHATBOT
+        }
+        parameter p_user_message (
+            parameter {
+                direction: inOut
+                dataType: varchar2
+                ignoreOutput: false
+            }
+            value {
+                item: P1_USER_MESSAGE
+            }
+            advanced {
+                displaySequence: 1
+            }
+        )
+        parameter p_messages_json (
+            parameter {
+                direction: inOut
+                dataType: clob
+                ignoreOutput: false
+            }
+            value {
+                item: P1_MESSAGES_JSON
+            }
+            advanced {
+                displaySequence: 2
+            }
+        )
+        serverSideCondition {
+            whenButtonPressed: @send
         }
     )
 
 )
-

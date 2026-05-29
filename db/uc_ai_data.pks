@@ -44,5 +44,22 @@ as
    */
   function get_employee_hierarchy (p_parameters in clob) return clob;
 
+  /*
+   * Render conversation history as HTML using HTP.P.
+   * Called from the APEX PL/SQL Dynamic Content region.
+   * p_messages_json: JSON array of {role, content} objects stored in session state.
+   */
+  procedure render_conversation (p_messages_json in clob);
+
+  /*
+   * Process a chatbot message: append user input, call UC AI with HR tools,
+   * append AI response, update p_messages_json, and clear p_user_message.
+   * Called via APEX invokeApi process.
+   */
+  procedure run_chatbot (
+    p_user_message  in out nocopy varchar2,
+    p_messages_json in out nocopy clob
+  );
+
 end uc_ai_data;
 /
