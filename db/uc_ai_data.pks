@@ -9,8 +9,11 @@ as
    */
 
   /*
-   * Search employees by name, department, or job.
-   * Parameters: p_name (optional), p_department_id (optional), p_job_id (optional)
+   * Search employees by name, department, job, or salary range.
+   * Parameters: p_name, p_department_id, p_job_id (all optional)
+   *             p_min_salary, p_max_salary (optional salary filters)
+   *             p_order_by: SALARY_DESC | SALARY_ASC | NAME_ASC | NAME_DESC | HIRE_DATE_DESC | HIRE_DATE_ASC
+   *             p_max_rows: limit number of results (e.g. 1 for top earner)
    */
   function search_employees (p_parameters in clob) return clob;
 
@@ -39,10 +42,23 @@ as
   function get_salary_report (p_parameters in clob) return clob;
 
   /*
-   * Get the reporting hierarchy (manager chain) for an employee.
+   * Get management hierarchy for an employee.
    * Parameters: p_employee_id (required)
+   *             p_direction: UP (default – chain to CEO) | DOWN (all subordinates recursively)
    */
   function get_employee_hierarchy (p_parameters in clob) return clob;
+
+  /*
+   * Get job history (past positions) for an employee.
+   * Parameters: p_employee_id (optional – all history if omitted)
+   */
+  function get_job_history (p_parameters in clob) return clob;
+
+  /*
+   * Get all office locations with country and region.
+   * Parameters: p_country_id (optional), p_region_id (optional)
+   */
+  function get_locations (p_parameters in clob) return clob;
 
   /*
    * Render conversation history as HTML using HTP.P.

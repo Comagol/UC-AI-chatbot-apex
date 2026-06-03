@@ -29,23 +29,27 @@ DECLARE
 BEGIN
 
   -- -----------------------------------------------------------------------
-  -- 1. search_employees
+  -- 1. search_employees  (updated with sort/limit/salary filters)
   -- -----------------------------------------------------------------------
   l_schema := json_object_t.parse('{
     "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
     "title": "Search Employees",
-    "description": "Search HR employees by name, department ID, or job ID. All parameters are optional.",
+    "description": "Search HR employees. Supports filtering by name, department, job, salary range. Use p_order_by=SALARY_DESC + p_max_rows=1 to find the highest-paid employee.",
     "properties": {
       "p_name":          {"type":"string",  "description":"Full or partial employee name (case-insensitive)"},
       "p_department_id": {"type":"number",  "description":"Filter by department ID"},
-      "p_job_id":        {"type":"string",  "description":"Filter by job code, e.g. IT_PROG or SA_MAN"}
+      "p_job_id":        {"type":"string",  "description":"Filter by job code, e.g. IT_PROG or SA_MAN"},
+      "p_min_salary":    {"type":"number",  "description":"Minimum salary filter"},
+      "p_max_salary":    {"type":"number",  "description":"Maximum salary filter"},
+      "p_order_by":      {"type":"string",  "description":"Sort order: SALARY_DESC, SALARY_ASC, NAME_ASC, NAME_DESC, HIRE_DATE_DESC, HIRE_DATE_ASC. Default: NAME_ASC"},
+      "p_max_rows":      {"type":"number",  "description":"Limit number of results returned, e.g. 1 for top result, 5 for top 5"}
     },
     "required": []
   }');
   upsert_tool(
     p_code        => 'HR_SEARCH_EMPLOYEES',
-    p_description => 'Search HR employees by name, department, or job. Returns employee list with job title, salary, and department.',
+    p_description => 'Search HR employees by name, department, job, or salary range. Supports sorting (SALARY_DESC/ASC, NAME_ASC/DESC, HIRE_DATE_DESC/ASC) and limiting rows. Use p_order_by=SALARY_DESC and p_max_rows=1 to find the highest-paid employee.',
     p_call        => 'return uc_ai_data.search_employees(:parameters);',
     p_schema      => l_schema
   );
@@ -57,7 +61,7 @@ BEGIN
     "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
     "title": "Get Employee Details",
-    "description": "Get full details of an employee including manager, office location, and job history. Provide either p_employee_id or p_last_name.",
+    "description": "Get full details of an employee including manager, office location, country, and region. Provide either p_employee_id or p_last_name.",
     "properties": {
       "p_employee_id": {"type":"number", "description":"Numeric employee ID"},
       "p_last_name":   {"type":"string", "description":"Employee last name (partial match, case-insensitive)"}
@@ -66,7 +70,7 @@ BEGIN
   }');
   upsert_tool(
     p_code        => 'HR_GET_EMPLOYEE_DETAILS',
-    p_description => 'Get complete employee profile: job, salary, manager, office city, country.',
+    p_description => 'Get complete employee profile: job, salary, manager, office city, country, and region.',
     p_call        => 'return uc_ai_data.get_employee_details(:parameters);',
     p_schema      => l_schema
   );
@@ -78,13 +82,13 @@ BEGIN
     "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
     "title": "Get Departments",
-    "description": "List all company departments with manager name, office location, and headcount.",
+    "description": "List all company departments with manager name, office location, country, region, and headcount.",
     "properties": {},
     "required": []
   }');
   upsert_tool(
     p_code        => 'HR_GET_DEPARTMENTS',
-    p_description => 'List all departments with manager, city, country, and employee headcount.',
+    p_description => 'List all departments with manager, city, country, region, and employee headcount.',
     p_call        => 'return uc_ai_data.get_departments(:parameters);',
     p_schema      => l_schema
   );
@@ -128,22 +132,64 @@ BEGIN
   );
 
   -- -----------------------------------------------------------------------
-  -- 6. get_employee_hierarchy
+  -- 6. get_employee_hierarchy  (updated: now supports UP and DOWN direction)
   -- -----------------------------------------------------------------------
   l_schema := json_object_t.parse('{
     "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
     "title": "Get Employee Hierarchy",
-    "description": "Walk the management chain upward from an employee to find all their managers up to the top.",
+    "description": "Walk the organisational hierarchy. UP (default): trace managers from an employee up to the CEO. DOWN: find all direct and indirect subordinates of a manager recursively.",
     "properties": {
-      "p_employee_id": {"type":"number", "description":"Employee ID to start the hierarchy walk from (required)"}
+      "p_employee_id": {"type":"number", "description":"Employee or manager ID to start from (required)"},
+      "p_direction":   {"type":"string", "description":"UP to find managers chain up to CEO; DOWN to find all subordinates recursively. Default: UP"}
     },
     "required": ["p_employee_id"]
   }');
   upsert_tool(
     p_code        => 'HR_GET_EMPLOYEE_HIERARCHY',
-    p_description => 'Trace the reporting chain (hierarchy) from a specific employee upward through all managers.',
+    p_description => 'Walk the org chart from any employee. Use p_direction=UP to find the full managers chain to CEO; use p_direction=DOWN to find all subordinates of a manager at every level.',
     p_call        => 'return uc_ai_data.get_employee_hierarchy(:parameters);',
+    p_schema      => l_schema
+  );
+
+  -- -----------------------------------------------------------------------
+  -- 7. get_job_history  (new)
+  -- -----------------------------------------------------------------------
+  l_schema := json_object_t.parse('{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "title": "Get Job History",
+    "description": "Get the employment history (past positions) for one or all employees. Shows previous jobs, departments, and tenure duration.",
+    "properties": {
+      "p_employee_id": {"type":"number", "description":"Employee ID. If omitted, returns job history for all employees."}
+    },
+    "required": []
+  }');
+  upsert_tool(
+    p_code        => 'HR_GET_JOB_HISTORY',
+    p_description => 'Get past job positions for an employee: previous job titles, departments, start/end dates, and duration in years.',
+    p_call        => 'return uc_ai_data.get_job_history(:parameters);',
+    p_schema      => l_schema
+  );
+
+  -- -----------------------------------------------------------------------
+  -- 8. get_locations  (new)
+  -- -----------------------------------------------------------------------
+  l_schema := json_object_t.parse('{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "title": "Get Locations",
+    "description": "Get all company office locations with street address, city, state, postal code, country, and region. Filter by country or region.",
+    "properties": {
+      "p_country_id":  {"type":"string", "description":"Two-letter country code to filter locations, e.g. US, UK, DE"},
+      "p_region_id":   {"type":"number", "description":"Region ID to filter locations (1=Europe, 2=Americas, 3=Asia, 4=Middle East and Africa)"}
+    },
+    "required": []
+  }');
+  upsert_tool(
+    p_code        => 'HR_GET_LOCATIONS',
+    p_description => 'Get all office locations with city, country, region, and department count. Filter by country code or region ID.',
+    p_call        => 'return uc_ai_data.get_locations(:parameters);',
     p_schema      => l_schema
   );
 
