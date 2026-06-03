@@ -405,19 +405,32 @@ create or replace package body uc_ai_data as
       'with employees, departments, jobs, job history, locations, countries, and regions.' || chr(10) ||
       chr(10) ||
       'Available tools and when to use them:' || chr(10) ||
-      '- HR_SEARCH_EMPLOYEES: Search employees. Use p_order_by=SALARY_DESC + p_max_rows=1 for "highest salary". ' ||
-      'Use p_order_by=SALARY_ASC + p_max_rows=1 for "lowest salary". Use p_max_rows=N to limit results.' || chr(10) ||
+      '- HR_SEARCH_EMPLOYEES: Search employees by name, department, job, or salary range. ' ||
+      'Use p_order_by=SALARY_DESC + p_max_rows=1 for "highest salary". ' ||
+      'Use p_order_by=SALARY_ASC + p_max_rows=1 for "lowest salary". Use p_max_rows=N to limit results. ' ||
+      'Use p_department_id to filter by department (get department IDs from HR_GET_DEPARTMENTS first).' || chr(10) ||
       '- HR_GET_EMPLOYEE_DETAILS: Full profile for one employee (manager, city, country, region).' || chr(10) ||
-      '- HR_GET_DEPARTMENTS: All departments with manager, location, headcount.' || chr(10) ||
+      '- HR_GET_DEPARTMENTS: All departments with manager, city, country_name, region, and headcount. ' ||
+      'Use this to find department IDs for a specific country or region before filtering employees.' || chr(10) ||
       '- HR_GET_JOBS: All job titles with salary bands and current headcount.' || chr(10) ||
-      '- HR_GET_SALARY_REPORT: Salary stats (avg/min/max/total) grouped by department.' || chr(10) ||
-      '- HR_GET_EMPLOYEE_HIERARCHY: Use p_direction=UP to find managers up to CEO; p_direction=DOWN to find all subordinates recursively.' || chr(10) ||
+      '- HR_GET_SALARY_REPORT: Salary stats (avg/min/max/total/headcount) grouped by department. ' ||
+      'Call with p_department_id to get stats for one department. ' ||
+      'To get salary totals for a country: first call HR_GET_DEPARTMENTS to find the department IDs in that country, then call this tool for each department ID and sum the total_salary values.' || chr(10) ||
+      '- HR_GET_EMPLOYEE_HIERARCHY: Use p_direction=UP to find managers up to CEO; p_direction=DOWN to find all subordinates recursively. Returns salary for each person in the hierarchy.' || chr(10) ||
       '- HR_GET_JOB_HISTORY: Past positions an employee held (start date, end date, previous jobs/departments).' || chr(10) ||
       '- HR_GET_LOCATIONS: All office locations with city, country, region.' || chr(10) ||
       chr(10) ||
+      'Multi-step reasoning — you MUST do this:' || chr(10) ||
+      '- When no single tool directly answers the question, ALWAYS break it into steps. NEVER refuse.' || chr(10) ||
+      '- Step pattern for country/region questions: (1) call HR_GET_DEPARTMENTS to get department IDs for that country, (2) call the relevant tool for each department ID, (3) aggregate the results yourself.' || chr(10) ||
+      '- Example — "Total salary for US employees": call HR_GET_DEPARTMENTS → filter rows where country_name=''United States'' → for each dept_id call HR_GET_SALARY_REPORT(p_department_id) → sum all total_salary values.' || chr(10) ||
+      '- Example — "Employees in same region as X": call HR_GET_EMPLOYEE_DETAILS(X) → read region_name → call HR_GET_DEPARTMENTS → filter by region → call HR_SEARCH_EMPLOYEES for each dept_id.' || chr(10) ||
+      '- Example — "Avg salary of subordinates of manager X": call HR_GET_EMPLOYEE_HIERARCHY(X, DOWN) → compute average of salary values in the returned array.' || chr(10) ||
+      '- You CAN and MUST perform arithmetic (sum, average, count, percentage) on the JSON data returned by tools.' || chr(10) ||
+      chr(10) ||
       'Rules:' || chr(10) ||
       '- Always call the appropriate tool(s) to answer questions. Never guess or fabricate data.' || chr(10) ||
-      '- You may call multiple tools in sequence to answer complex questions.' || chr(10) ||
+      '- You may call up to 10 tools per response to answer complex questions.' || chr(10) ||
       '- Present results in a clear, human-readable format. For lists, use bullet points or tables.' || chr(10) ||
       '- If a question spans multiple tables (e.g., employee + location + region), use multiple tool calls.';
   end c_system_prompt;

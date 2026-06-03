@@ -38,7 +38,7 @@ BEGIN
     "description": "Search HR employees. Supports filtering by name, department, job, salary range. Use p_order_by=SALARY_DESC + p_max_rows=1 to find the highest-paid employee.",
     "properties": {
       "p_name":          {"type":"string",  "description":"Full or partial employee name (case-insensitive)"},
-      "p_department_id": {"type":"number",  "description":"Filter by department ID"},
+      "p_department_id": {"type":"number",  "description":"Filter by department ID. Use HR_GET_DEPARTMENTS first to find department IDs for a specific country or region."},
       "p_job_id":        {"type":"string",  "description":"Filter by job code, e.g. IT_PROG or SA_MAN"},
       "p_min_salary":    {"type":"number",  "description":"Minimum salary filter"},
       "p_max_salary":    {"type":"number",  "description":"Maximum salary filter"},
@@ -49,7 +49,7 @@ BEGIN
   }');
   upsert_tool(
     p_code        => 'HR_SEARCH_EMPLOYEES',
-    p_description => 'Search HR employees by name, department, job, or salary range. Supports sorting (SALARY_DESC/ASC, NAME_ASC/DESC, HIRE_DATE_DESC/ASC) and limiting rows. Use p_order_by=SALARY_DESC and p_max_rows=1 to find the highest-paid employee.',
+    p_description => 'Search HR employees by name, department, job, or salary range. Supports sorting (SALARY_DESC/ASC, NAME_ASC/DESC, HIRE_DATE_DESC/ASC) and limiting rows. Use p_order_by=SALARY_DESC and p_max_rows=1 to find the highest-paid employee. To filter by country, first call HR_GET_DEPARTMENTS to get the department IDs for that country, then call this tool with p_department_id.',
     p_call        => 'return uc_ai_data.search_employees(:parameters);',
     p_schema      => l_schema
   );
@@ -120,13 +120,13 @@ BEGIN
     "title": "Get Salary Report",
     "description": "Get salary statistics (average, min, max, total) grouped by department. Optionally filter by a single department.",
     "properties": {
-      "p_department_id": {"type":"number", "description":"Optional: filter to a specific department ID"}
+      "p_department_id": {"type":"number", "description":"Optional: filter to a specific department ID. To get salary stats for a country, first call HR_GET_DEPARTMENTS to find department IDs in that country, then call this tool for each department."}
     },
     "required": []
   }');
   upsert_tool(
     p_code        => 'HR_GET_SALARY_REPORT',
-    p_description => 'Get salary statistics per department: headcount, average, min, max, and total payroll.',
+    p_description => 'Get salary statistics per department: headcount, average, min, max, and total payroll. To get salary data for a specific country or region, first call HR_GET_DEPARTMENTS to find the department IDs in that country, then call this tool for each department ID and sum the total_salary values.',
     p_call        => 'return uc_ai_data.get_salary_report(:parameters);',
     p_schema      => l_schema
   );
