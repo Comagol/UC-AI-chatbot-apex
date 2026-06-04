@@ -430,12 +430,28 @@ create or replace package body uc_ai_data as
 
   -- -------------------------------------------------------------------------
   -- record_token_usage: inserts a row into uc_ai_token_usage after each call.
-  -- p_result is the json_object_t returned by uc_ai.generate_text.
+  -- Uses AUTONOMOUS_TRANSACTION so the log commit is independent of the
+  -- caller's transaction. Resolves APP_USER via multiple fallbacks to
+  -- guarantee a non-null value even in definer-rights context.
   -- -------------------------------------------------------------------------
   procedure record_token_usage (p_result in json_object_t)
   as
-    l_usage json_object_t;
+    pragma autonomous_transaction;
+    l_usage  json_object_t;
+    l_user   varchar2(255);
+    l_session varchar2(100);
   begin
+    -- Resolve APEX user with fallbacks: APP_USER → APEX g_user → DB session user
+    l_user := nullif(trim(v('APP_USER')), '');
+    if l_user is null then
+      l_user := nullif(trim(apex_application.g_user), '');
+    end if;
+    if l_user is null then
+      l_user := sys_context('USERENV', 'SESSION_USER');
+    end if;
+
+    l_session := nullif(trim(v('APP_SESSION')), '');
+
     if p_result.has('usage') then
       l_usage := treat(p_result.get('usage') as json_object_t);
       insert into uc_ai_token_usage (
@@ -449,8 +465,8 @@ create or replace package body uc_ai_data as
         model,
         provider
       ) values (
-        v('APP_USER'),
-        v('APP_SESSION'),
+        l_user,
+        l_session,
         nvl(l_usage.get_number('prompt_tokens'),     0),
         nvl(l_usage.get_number('completion_tokens'), 0),
         nvl(l_usage.get_number('reasoning_tokens'),  0),
@@ -463,7 +479,6 @@ create or replace package body uc_ai_data as
     end if;
   exception
     when others then
-      -- Never let logging failures break the chatbot response
       rollback;
   end record_token_usage;
 
