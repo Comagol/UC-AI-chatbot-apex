@@ -1,0 +1,5 @@
+-- Deinstall script — removes token limiting tables
+BEGIN EXECUTE IMMEDIATE 'DROP TABLE uc_ai_token_usage PURGE';  EXCEPTION WHEN OTHERS THEN NULL; END;
+/
+BEGIN EXECUTE IMMEDIATE 'DROP TABLE uc_ai_token_limits PURGE';  EXCEPTION WHEN OTHERS THEN NULL; END;
+/

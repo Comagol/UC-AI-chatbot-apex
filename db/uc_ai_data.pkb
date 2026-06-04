@@ -376,6 +376,98 @@ create or replace package body uc_ai_data as
   end render_conversation;
 
   -- -------------------------------------------------------------------------
+  -- check_token_limit: raises -20101 if the current APEX user has exceeded
+  -- any active daily or weekly token/request quota.
+  -- -------------------------------------------------------------------------
+  procedure check_token_limit
+  as
+    l_apex_user  varchar2(255) := v('APP_USER');
+    l_tokens     number;
+    l_requests   number;
+    l_limit      uc_ai_token_limits%rowtype;
+
+    cursor c_active_limits is
+      select * from uc_ai_token_limits
+       where is_active = 'Y'
+       order by period_type;
+  begin
+    for l_limit in c_active_limits loop
+      -- Compute window start based on period type
+      select nvl(sum(total_tokens), 0),
+             count(*)
+        into l_tokens,
+             l_requests
+        from uc_ai_token_usage
+       where apex_user = l_apex_user
+         and created_at >= case l_limit.period_type
+                             when 'DAILY'  then trunc(systimestamp)
+                             when 'WEEKLY' then trunc(systimestamp) - to_number(to_char(sysdate, 'D')) + 1
+                           end;
+
+      if l_tokens >= l_limit.max_tokens then
+        raise_application_error(-20101,
+          'You have reached your ' || lower(l_limit.period_type) ||
+          ' token limit (' || to_char(l_limit.max_tokens, 'FM999G999G999') ||
+          ' tokens). Your quota resets ' ||
+          case l_limit.period_type
+            when 'DAILY'  then 'at midnight.'
+            when 'WEEKLY' then 'at the start of next week.'
+          end);
+      end if;
+
+      if l_limit.max_requests is not null and l_requests >= l_limit.max_requests then
+        raise_application_error(-20101,
+          'You have reached your ' || lower(l_limit.period_type) ||
+          ' request limit (' || l_limit.max_requests ||
+          ' requests). Your quota resets ' ||
+          case l_limit.period_type
+            when 'DAILY'  then 'at midnight.'
+            when 'WEEKLY' then 'at the start of next week.'
+          end);
+      end if;
+    end loop;
+  end check_token_limit;
+
+  -- -------------------------------------------------------------------------
+  -- record_token_usage: inserts a row into uc_ai_token_usage after each call.
+  -- p_result is the json_object_t returned by uc_ai.generate_text.
+  -- -------------------------------------------------------------------------
+  procedure record_token_usage (p_result in json_object_t)
+  as
+    l_usage json_object_t;
+  begin
+    if p_result.has('usage') then
+      l_usage := treat(p_result.get('usage') as json_object_t);
+      insert into uc_ai_token_usage (
+        apex_user,
+        apex_session_id,
+        prompt_tokens,
+        completion_tokens,
+        reasoning_tokens,
+        total_tokens,
+        tool_calls_count,
+        model,
+        provider
+      ) values (
+        v('APP_USER'),
+        v('APP_SESSION'),
+        nvl(l_usage.get_number('prompt_tokens'),     0),
+        nvl(l_usage.get_number('completion_tokens'), 0),
+        nvl(l_usage.get_number('reasoning_tokens'),  0),
+        nvl(l_usage.get_number('total_tokens'),      0),
+        nvl(p_result.get_number('tool_calls_count'), 0),
+        p_result.get_string('model'),
+        p_result.get_string('provider')
+      );
+      commit;
+    end if;
+  exception
+    when others then
+      -- Never let logging failures break the chatbot response
+      rollback;
+  end record_token_usage;
+
+  -- -------------------------------------------------------------------------
   -- c_make_msg: internal helper to build a UC AI message object.
   -- UC_AI_GOOGLE requires content to be an array: [{type:"text", text:"..."}]
   -- -------------------------------------------------------------------------
@@ -449,6 +541,62 @@ create or replace package body uc_ai_data as
   end c_sys_msg;
 
   -- -------------------------------------------------------------------------
+  -- get_usage_summary: returns the current user's token consumption and limit
+  -- for the requested period (DAILY or WEEKLY) as a JSON object.
+  -- -------------------------------------------------------------------------
+  function get_usage_summary (p_period in varchar2 default 'DAILY')
+    return json_object_t
+  as
+    l_apex_user      varchar2(255) := v('APP_USER');
+    l_tokens_used    number := 0;
+    l_requests_used  number := 0;
+    l_max_tokens     number := 0;
+    l_max_requests   number;
+    l_pct            number := 0;
+    l_window_start   date;
+    l_result         json_object_t := json_object_t();
+  begin
+    l_window_start := case upper(p_period)
+                        when 'WEEKLY' then trunc(sysdate) - to_number(to_char(sysdate, 'D')) + 1
+                        else               trunc(sysdate)
+                      end;
+
+    select nvl(sum(total_tokens), 0),
+           count(*)
+      into l_tokens_used,
+           l_requests_used
+      from uc_ai_token_usage
+     where apex_user  = l_apex_user
+       and created_at >= l_window_start;
+
+    begin
+      select max_tokens, max_requests
+        into l_max_tokens, l_max_requests
+        from uc_ai_token_limits
+       where period_type = upper(p_period)
+         and is_active   = 'Y';
+    exception
+      when no_data_found then
+        l_max_tokens   := 0;
+        l_max_requests := null;
+    end;
+
+    if l_max_tokens > 0 then
+      l_pct := round((l_tokens_used / l_max_tokens) * 100, 1);
+    end if;
+
+    l_result.put('period',           upper(p_period));
+    l_result.put('tokens_used',      l_tokens_used);
+    l_result.put('tokens_limit',     l_max_tokens);
+    l_result.put('tokens_remaining', greatest(l_max_tokens - l_tokens_used, 0));
+    l_result.put('requests_used',    l_requests_used);
+    l_result.put('requests_limit',   nvl(l_max_requests, 0));
+    l_result.put('pct_used',         l_pct);
+    l_result.put('limit_active',     case when l_max_tokens > 0 then 'Y' else 'N' end);
+    return l_result;
+  end get_usage_summary;
+
+  -- -------------------------------------------------------------------------
   -- run_chatbot
   -- -------------------------------------------------------------------------
   procedure run_chatbot (
@@ -469,6 +617,9 @@ create or replace package body uc_ai_data as
     if p_user_message is null then
       return;
     end if;
+
+    -- Pre-flight: raise -20101 if the user has exceeded any active quota
+    check_token_limit;
 
     -- Parse session state, which holds both display history and full API history.
     -- Format: {"display": [...], "api": [...]}
@@ -508,6 +659,9 @@ create or replace package body uc_ai_data as
     );
 
     l_response := l_result.get_clob('final_message');
+
+    -- Log token consumption for this request
+    record_token_usage(l_result);
 
     -- Persist the FULL API messages array returned by UC AI.
     -- This preserves tool call/result history between turns, as recommended by docs.

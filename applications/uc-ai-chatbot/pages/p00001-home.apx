@@ -21,6 +21,18 @@ page 1 (
             #send-row    { display: flex; align-items: flex-end; gap: 8px; margin-top: 6px; }
             #send-row textarea { flex: 1; }
             #send-row .t-Button { margin-bottom: 2px; white-space: nowrap; }
+            /* Token usage badge */
+            .uc-ai-usage { display: flex; align-items: center; gap: 16px; padding: 8px 12px; background: #f8f9fa; border: 1px solid #e2e5e9; border-radius: 8px; font-size: 0.82rem; color: #555; flex-wrap: wrap; }
+            .uc-ai-usage-label { font-weight: 600; color: #333; white-space: nowrap; }
+            .uc-ai-progress-wrap { flex: 1; min-width: 120px; background: #e0e0e0; border-radius: 4px; height: 6px; overflow: hidden; }
+            .uc-ai-progress-bar  { height: 100%; border-radius: 4px; transition: width .4s ease; }
+            .uc-ai-progress-bar.low    { background: #28a745; }
+            .uc-ai-progress-bar.medium { background: #fd7e14; }
+            .uc-ai-progress-bar.high   { background: #dc3545; }
+            .uc-ai-usage-detail { white-space: nowrap; }
+            /* Limit-exceeded inline error */
+            .uc-ai-limit-error { display: flex; align-items: flex-start; gap: 10px; padding: 12px 16px; background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; color: #856404; font-size: 0.9rem; margin-bottom: 6px; }
+            .uc-ai-limit-error .uc-ai-limit-icon { font-size: 1.2rem; flex-shrink: 0; }
             ```
     }
     security {
@@ -39,6 +51,60 @@ page 1 (
         appearance {
             template: @/hero
             templateOptions: #DEFAULT#
+        }
+    )
+
+    region token-usage-badge (
+        name: Daily Token Usage
+        type: dynamicContent
+        layout {
+            sequence: 15
+            slot: body
+        }
+        appearance {
+            template: @/blank-with-attributes
+            templateOptions: #DEFAULT#
+        }
+        source {
+            plsqlFunctionBody:
+                ```plsql
+                declare
+                  l_u  json_object_t := uc_ai_data.get_usage_summary('DAILY');
+                  l_pct     number        := nvl(l_u.get_number('pct_used'), 0);
+                  l_used    number        := nvl(l_u.get_number('tokens_used'), 0);
+                  l_limit   number        := nvl(l_u.get_number('tokens_limit'), 0);
+                  l_req_u   number        := nvl(l_u.get_number('requests_used'), 0);
+                  l_req_l   number        := nvl(l_u.get_number('requests_limit'), 0);
+                  l_bar_cls varchar2(10)  := case
+                                               when l_pct >= 90 then 'high'
+                                               when l_pct >= 60 then 'medium'
+                                               else                   'low'
+                                             end;
+                  l_pct_disp varchar2(10) := to_char(least(l_pct, 100), 'FM990D0') || '%';
+                begin
+                  if l_limit = 0 then
+                    return;  -- no active daily limit; render nothing
+                  end if;
+                  htp.p('<div class="uc-ai-usage">');
+                  htp.p('<span class="uc-ai-usage-label">&#128221; Today''s usage</span>');
+                  htp.p('<div class="uc-ai-progress-wrap">');
+                  htp.p('<div class="uc-ai-progress-bar ' || l_bar_cls || '" style="width:' ||
+                        to_char(least(l_pct, 100), 'FM990D0') || '%"></div>');
+                  htp.p('</div>');
+                  htp.p('<span class="uc-ai-usage-detail">');
+                  htp.p(apex_escape.html(to_char(l_used, 'FM999G999G999')) ||
+                        ' / ' || apex_escape.html(to_char(l_limit, 'FM999G999G999')) ||
+                        ' tokens (' || l_pct_disp || ')');
+                  htp.p('</span>');
+                  if l_req_l > 0 then
+                    htp.p('<span class="uc-ai-usage-detail" style="color:#777;">');
+                    htp.p(apex_escape.html(to_char(l_req_u)) || ' / ' ||
+                          apex_escape.html(to_char(l_req_l)) || ' requests');
+                    htp.p('</span>');
+                  end if;
+                  htp.p('</div>');
+                end;
+                ```
         }
     )
 
@@ -61,6 +127,36 @@ page 1 (
         }
     )
 
+    region limit-error-banner (
+        name: Limit Error
+        type: dynamicContent
+        layout {
+            sequence: 25
+            slot: body
+        }
+        appearance {
+            template: @/blank-with-attributes
+            templateOptions: #DEFAULT#
+        }
+        source {
+            plsqlFunctionBody:
+                ```plsql
+                begin
+                  if :P1_LIMIT_ERROR is not null then
+                    htp.p('<div class="uc-ai-limit-error">');
+                    htp.p('<span class="uc-ai-limit-icon">&#9888;&#65039;</span>');
+                    htp.p('<span>' || apex_escape.html(:P1_LIMIT_ERROR) || '</span>');
+                    htp.p('</div>');
+                  end if;
+                end;
+                ```
+        }
+        serverSideCondition {
+            type: item-is-not-null
+            item: P1_LIMIT_ERROR
+        }
+    )
+
     region send-message (
         name: Ask a Question
         type: staticContent
@@ -71,6 +167,18 @@ page 1 (
         appearance {
             template: @/standard
             templateOptions: #DEFAULT#
+        }
+    )
+
+    pageItem P1_LIMIT_ERROR (
+        type: hidden
+        layout {
+            sequence: 5
+            region: @send-message
+            slot: regionBody
+        }
+        sessionState {
+            storage: session
         }
     )
 
@@ -125,43 +233,46 @@ page 1 (
         }
     )
 
+    process clear-limit-error (
+        name: Clear Previous Limit Error
+        type: executePlsql
+        execution {
+            sequence: 5
+            point: processing
+        }
+        plsql {
+            code:
+                ```plsql
+                :P1_LIMIT_ERROR := null;
+                ```
+        }
+        serverSideCondition {
+            whenButtonPressed: @send
+        }
+    )
+
     process call-uc-ai (
         name: Call UC AI with HR Tools
-        type: invokeApi
+        type: executePlsql
         execution {
             sequence: 10
             point: processing
         }
-        invoke {
-            package: UC_AI_DATA
-            procedureOrFunction: RUN_CHATBOT
+        plsql {
+            code:
+                ```plsql
+                begin
+                  uc_ai_data.run_chatbot(
+                    p_user_message  => :P1_USER_MESSAGE,
+                    p_messages_json => :P1_MESSAGES_JSON
+                  );
+                exception
+                  when uc_ai_data.e_token_limit_exceeded then
+                    -- Catch limit errors and surface them inline without a page error
+                    :P1_LIMIT_ERROR := replace(sqlerrm, 'ORA-20101: ', '');
+                end;
+                ```
         }
-        parameter p_user_message (
-            parameter {
-                direction: inOut
-                dataType: varchar2
-                ignoreOutput: false
-            }
-            value {
-                item: P1_USER_MESSAGE
-            }
-            advanced {
-                displaySequence: 1
-            }
-        )
-        parameter p_messages_json (
-            parameter {
-                direction: inOut
-                dataType: clob
-                ignoreOutput: false
-            }
-            value {
-                item: P1_MESSAGES_JSON
-            }
-            advanced {
-                displaySequence: 2
-            }
-        )
         serverSideCondition {
             whenButtonPressed: @send
         }
