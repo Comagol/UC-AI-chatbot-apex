@@ -141,19 +141,17 @@ page 1 (
         source {
             plsqlFunctionBody:
                 ```plsql
+                declare
+                  l_msg varchar2(32767) := :P1_LIMIT_ERROR;
                 begin
-                  if :P1_LIMIT_ERROR is not null then
+                  if l_msg is not null then
                     htp.p('<div class="uc-ai-limit-error">');
                     htp.p('<span class="uc-ai-limit-icon">&#9888;&#65039;</span>');
-                    htp.p('<span>' || apex_escape.html(:P1_LIMIT_ERROR) || '</span>');
+                    htp.p('<span>' || apex_escape.html(l_msg) || '</span>');
                     htp.p('</div>');
                   end if;
                 end;
                 ```
-        }
-        serverSideCondition {
-            type: item-is-not-null
-            item: P1_LIMIT_ERROR
         }
     )
 
@@ -235,13 +233,14 @@ page 1 (
 
     process clear-limit-error (
         name: Clear Previous Limit Error
-        type: executePlsql
+        type: executeCode
         execution {
             sequence: 5
             point: processing
         }
-        plsql {
-            code:
+        source {
+            language: plsql
+            plsqlCode:
                 ```plsql
                 :P1_LIMIT_ERROR := null;
                 ```
@@ -253,13 +252,14 @@ page 1 (
 
     process call-uc-ai (
         name: Call UC AI with HR Tools
-        type: executePlsql
+        type: executeCode
         execution {
             sequence: 10
             point: processing
         }
-        plsql {
-            code:
+        source {
+            language: plsql
+            plsqlCode:
                 ```plsql
                 begin
                   uc_ai_data.run_chatbot(
@@ -268,7 +268,6 @@ page 1 (
                   );
                 exception
                   when uc_ai_data.e_token_limit_exceeded then
-                    -- Catch limit errors and surface them inline without a page error
                     :P1_LIMIT_ERROR := replace(sqlerrm, 'ORA-20101: ', '');
                 end;
                 ```
