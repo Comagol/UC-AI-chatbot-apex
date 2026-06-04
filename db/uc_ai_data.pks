@@ -71,11 +71,23 @@ as
    * Process a chatbot message: append user input, call UC AI with HR tools,
    * append AI response, update p_messages_json, and clear p_user_message.
    * Called via APEX invokeApi process.
+   * Raises -20101 when the user has hit a token or request limit.
    */
   procedure run_chatbot (
     p_user_message  in out nocopy varchar2,
     p_messages_json in out nocopy clob
   );
+
+  /*
+   * Return a JSON object with the current user's token usage for the given
+   * period (DAILY or WEEKLY). Used by the APEX badge region.
+   * Returns: {period, tokens_used, tokens_limit, requests_used, requests_limit, pct_used}
+   */
+  function get_usage_summary (p_period in varchar2 default 'DAILY')
+    return json_object_t;
+
+  e_token_limit_exceeded exception;
+  pragma exception_init(e_token_limit_exceeded, -20101);
 
 end uc_ai_data;
 /
