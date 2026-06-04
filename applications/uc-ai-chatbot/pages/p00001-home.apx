@@ -83,7 +83,7 @@ page 1 (
                   l_pct_disp varchar2(10) := to_char(least(l_pct, 100), 'FM990D0') || '%';
                 begin
                   if l_limit = 0 then
-                    return;  -- no active daily limit; render nothing
+                    return null;
                   end if;
                   htp.p('<div class="uc-ai-usage">');
                   htp.p('<span class="uc-ai-usage-label">&#128221; Today''s usage</span>');
