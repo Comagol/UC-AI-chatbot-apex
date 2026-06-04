@@ -381,7 +381,8 @@ create or replace package body uc_ai_data as
   -- -------------------------------------------------------------------------
   procedure check_token_limit
   as
-    l_apex_user  varchar2(255) := v('APP_USER');
+    l_apex_user  varchar2(255) := nvl(nullif(trim(apex_application.g_user), ''),
+                                      sys_context('USERENV', 'SESSION_USER'));
     l_tokens     number;
     l_requests   number;
     l_limit      uc_ai_token_limits%rowtype;
@@ -430,56 +431,48 @@ create or replace package body uc_ai_data as
 
   -- -------------------------------------------------------------------------
   -- record_token_usage: inserts a row into uc_ai_token_usage after each call.
-  -- Uses AUTONOMOUS_TRANSACTION so the log commit is independent of the
-  -- caller's transaction. Resolves APP_USER via multiple fallbacks to
-  -- guarantee a non-null value even in definer-rights context.
+  -- Accepts plain scalar values (no json_object_t) to avoid LOB/object
+  -- issues across transaction boundaries.
+  -- Uses apex_application.g_user as the authoritative APEX user source,
+  -- falling back to the DB session user to guarantee a non-null value.
   -- -------------------------------------------------------------------------
-  procedure record_token_usage (p_result in json_object_t)
+  procedure record_token_usage (
+    p_prompt_tokens     in number,
+    p_completion_tokens in number,
+    p_reasoning_tokens  in number,
+    p_total_tokens      in number,
+    p_tool_calls        in number,
+    p_model             in varchar2,
+    p_provider          in varchar2
+  )
   as
-    pragma autonomous_transaction;
-    l_usage  json_object_t;
-    l_user   varchar2(255);
-    l_session varchar2(100);
+    l_user varchar2(255) := nvl(nullif(trim(apex_application.g_user), ''),
+                                sys_context('USERENV', 'SESSION_USER'));
   begin
-    -- Resolve APEX user with fallbacks: APP_USER → APEX g_user → DB session user
-    l_user := nullif(trim(v('APP_USER')), '');
-    if l_user is null then
-      l_user := nullif(trim(apex_application.g_user), '');
-    end if;
-    if l_user is null then
-      l_user := sys_context('USERENV', 'SESSION_USER');
-    end if;
-
-    l_session := nullif(trim(v('APP_SESSION')), '');
-
-    if p_result.has('usage') then
-      l_usage := treat(p_result.get('usage') as json_object_t);
-      insert into uc_ai_token_usage (
-        apex_user,
-        apex_session_id,
-        prompt_tokens,
-        completion_tokens,
-        reasoning_tokens,
-        total_tokens,
-        tool_calls_count,
-        model,
-        provider
-      ) values (
-        l_user,
-        l_session,
-        nvl(l_usage.get_number('prompt_tokens'),     0),
-        nvl(l_usage.get_number('completion_tokens'), 0),
-        nvl(l_usage.get_number('reasoning_tokens'),  0),
-        nvl(l_usage.get_number('total_tokens'),      0),
-        nvl(p_result.get_number('tool_calls_count'), 0),
-        p_result.get_string('model'),
-        p_result.get_string('provider')
-      );
-      commit;
-    end if;
+    insert into uc_ai_token_usage (
+      apex_user,
+      apex_session_id,
+      prompt_tokens,
+      completion_tokens,
+      reasoning_tokens,
+      total_tokens,
+      tool_calls_count,
+      model,
+      provider
+    ) values (
+      l_user,
+      apex_application.g_instance,
+      p_prompt_tokens,
+      p_completion_tokens,
+      p_reasoning_tokens,
+      p_total_tokens,
+      p_tool_calls,
+      p_model,
+      p_provider
+    );
   exception
     when others then
-      rollback;
+      null;  -- never let logging break the chatbot response
   end record_token_usage;
 
   -- -------------------------------------------------------------------------
@@ -562,7 +555,8 @@ create or replace package body uc_ai_data as
   function get_usage_summary (p_period in varchar2 default 'DAILY')
     return json_object_t
   as
-    l_apex_user      varchar2(255) := v('APP_USER');
+    l_apex_user      varchar2(255) := nvl(nullif(trim(apex_application.g_user), ''),
+                                          sys_context('USERENV', 'SESSION_USER'));
     l_tokens_used    number := 0;
     l_requests_used  number := 0;
     l_max_tokens     number := 0;
@@ -675,8 +669,23 @@ create or replace package body uc_ai_data as
 
     l_response := l_result.get_clob('final_message');
 
-    -- Log token consumption for this request
-    record_token_usage(l_result);
+    -- Extract token scalars and log — scalars only, no JSON object crossing
+    declare
+      l_usage json_object_t;
+    begin
+      if l_result.has('usage') then
+        l_usage := treat(l_result.get('usage') as json_object_t);
+        record_token_usage(
+          p_prompt_tokens     => nvl(l_usage.get_number('prompt_tokens'),     0),
+          p_completion_tokens => nvl(l_usage.get_number('completion_tokens'), 0),
+          p_reasoning_tokens  => nvl(l_usage.get_number('reasoning_tokens'),  0),
+          p_total_tokens      => nvl(l_usage.get_number('total_tokens'),      0),
+          p_tool_calls        => nvl(l_result.get_number('tool_calls_count'), 0),
+          p_model             => l_result.get_string('model'),
+          p_provider          => l_result.get_string('provider')
+        );
+      end if;
+    end;
 
     -- Persist the FULL API messages array returned by UC AI.
     -- This preserves tool call/result history between turns, as recommended by docs.

@@ -79,6 +79,20 @@ as
   );
 
   /*
+   * Log token consumption for one chatbot request. Called after generate_text
+   * returns. Accepts plain scalars so no LOB/object crossing is needed.
+   */
+  procedure record_token_usage (
+    p_prompt_tokens     in number,
+    p_completion_tokens in number,
+    p_reasoning_tokens  in number,
+    p_total_tokens      in number,
+    p_tool_calls        in number,
+    p_model             in varchar2,
+    p_provider          in varchar2
+  );
+
+  /*
    * Return a JSON object with the current user's token usage for the given
    * period (DAILY or WEEKLY). Used by the APEX badge region.
    * Returns: {period, tokens_used, tokens_limit, requests_used, requests_limit, pct_used}
