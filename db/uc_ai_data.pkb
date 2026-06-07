@@ -336,6 +336,67 @@ create or replace package body uc_ai_data as
   -- -------------------------------------------------------------------------
   -- render_conversation
   -- -------------------------------------------------------------------------
+  function c_pct (p_part in number, p_total in number) return varchar2
+  as
+  begin
+    if p_total = 0 then
+      return '0';
+    end if;
+    return to_char(round((p_part / p_total) * 100), 'FM990');
+  end c_pct;
+
+  procedure render_token_meta (p_usage in json_object_t)
+  as
+    l_total      number;
+    l_prompt     number;
+    l_completion number;
+    l_reasoning  number;
+    l_tools      number;
+    l_model      varchar2(100);
+    l_ts         varchar2(40);
+    l_breakdown  varchar2(400);
+  begin
+    if p_usage is null then
+      return;
+    end if;
+
+    l_total      := nvl(p_usage.get_number('total_tokens'), 0);
+    l_prompt     := nvl(p_usage.get_number('prompt_tokens'), 0);
+    l_completion := nvl(p_usage.get_number('completion_tokens'), 0);
+    l_reasoning  := nvl(p_usage.get_number('reasoning_tokens'), 0);
+    l_tools      := nvl(p_usage.get_number('tool_calls'), 0);
+    l_model      := nvl(p_usage.get_string('model'), 'unknown');
+    l_ts         := nvl(
+                      p_usage.get_string('created_at'),
+                      to_char(systimestamp at time zone 'UTC', 'YYYY-MM-DD') || ' ~' ||
+                      to_char(systimestamp at time zone 'UTC', 'HH24:MI') || ' UTC'
+                    );
+
+    if l_total = 0 then
+      return;
+    end if;
+
+    l_breakdown := '(Prompt: ~' || c_pct(l_prompt, l_total) || '%, Completion: ~' ||
+                   c_pct(l_completion, l_total) || '%';
+    if l_reasoning > 0 then
+      l_breakdown := l_breakdown || ', Reasoning: ~' || c_pct(l_reasoning, l_total) || '%';
+    end if;
+    l_breakdown := l_breakdown || ')';
+
+    htp.p('<div class="uc-ai-status-bar">');
+    htp.p('<span>' || apex_escape.html(l_ts) || '</span>');
+    htp.p('<span class="uc-ai-status-sep">&middot;</span>');
+    htp.p('<span>Model: ' || apex_escape.html(l_model) || '</span>');
+    htp.p('<span class="uc-ai-status-sep">&middot;</span>');
+    htp.p('<span>Tokens: ~' || apex_escape.html(to_char(l_total, 'FM999G999G999')) ||
+          ' ' || apex_escape.html(l_breakdown) || '</span>');
+    if l_tools > 0 then
+      htp.p('<span class="uc-ai-status-sep">&middot;</span>');
+      htp.p('<span>Tools: ' || apex_escape.html(to_char(l_tools)) || ' HR calls</span>');
+    end if;
+    htp.p('</div>');
+  end render_token_meta;
+
   procedure render_conversation (p_messages_json in clob)
   as
     l_messages json_array_t;
@@ -343,6 +404,7 @@ create or replace package body uc_ai_data as
     l_msg      json_object_t;
     l_role     varchar2(20);
     l_content  clob;
+    l_usage    json_object_t;
   begin
     if p_messages_json is not null and p_messages_json != '[]' then
       -- Support both new session format {"display":[...],"api":[...]} and legacy flat array
@@ -363,9 +425,14 @@ create or replace package body uc_ai_data as
           htp.p(apex_escape.html(l_content));
           htp.p('</div>');
         elsif l_role = 'assistant' then
+          htp.p('<div class="uc-ai-bot-wrap">');
           htp.p('<div class="uc-ai-bubble uc-ai-bot">');
           htp.p('<span class="uc-ai-label">AI Assistant</span>');
           htp.p(apex_escape.html(l_content));
+          htp.p('</div>');
+          if l_msg.has('usage') then
+            render_token_meta(treat(l_msg.get('usage') as json_object_t));
+          end if;
           htp.p('</div>');
         end if;
       end loop;
@@ -620,8 +687,15 @@ create or replace package body uc_ai_data as
     -- Stored as a JSON sub-key inside p_messages_json so it is preserved across turns.
     l_session   json_object_t;
     l_api       json_array_t  := json_array_t();
-    l_result    json_object_t;
-    l_response  clob;
+    l_result     json_object_t;
+    l_response   clob;
+    l_usage      json_object_t;
+    l_usage_disp json_object_t;
+    l_pt         number;
+    l_ct         number;
+    l_rt         number;
+    l_tt         number;
+    l_tc         number;
   begin
     if p_user_message is null then
       return;
@@ -669,23 +743,39 @@ create or replace package body uc_ai_data as
 
     l_response := l_result.get_clob('final_message');
 
-    -- Extract token scalars and log — scalars only, no JSON object crossing
-    declare
-      l_usage json_object_t;
-    begin
-      if l_result.has('usage') then
-        l_usage := treat(l_result.get('usage') as json_object_t);
-        record_token_usage(
-          p_prompt_tokens     => nvl(l_usage.get_number('prompt_tokens'),     0),
-          p_completion_tokens => nvl(l_usage.get_number('completion_tokens'), 0),
-          p_reasoning_tokens  => nvl(l_usage.get_number('reasoning_tokens'),  0),
-          p_total_tokens      => nvl(l_usage.get_number('total_tokens'),      0),
-          p_tool_calls        => nvl(l_result.get_number('tool_calls_count'), 0),
-          p_model             => l_result.get_string('model'),
-          p_provider          => l_result.get_string('provider')
-        );
-      end if;
-    end;
+    -- Extract token scalars, log usage, and attach per-exchange counts to display history.
+    l_usage_disp := null;
+    if l_result.has('usage') then
+      l_usage := treat(l_result.get('usage') as json_object_t);
+      l_pt    := nvl(l_usage.get_number('prompt_tokens'),     0);
+      l_ct    := nvl(l_usage.get_number('completion_tokens'), 0);
+      l_rt    := nvl(l_usage.get_number('reasoning_tokens'),  0);
+      l_tt    := nvl(l_usage.get_number('total_tokens'),      0);
+      l_tc    := nvl(l_result.get_number('tool_calls_count'), 0);
+
+      record_token_usage(
+        p_prompt_tokens     => l_pt,
+        p_completion_tokens => l_ct,
+        p_reasoning_tokens  => l_rt,
+        p_total_tokens      => l_tt,
+        p_tool_calls        => l_tc,
+        p_model             => l_result.get_string('model'),
+        p_provider          => l_result.get_string('provider')
+      );
+
+      l_usage_disp := json_object_t();
+      l_usage_disp.put('prompt_tokens',     l_pt);
+      l_usage_disp.put('completion_tokens', l_ct);
+      l_usage_disp.put('reasoning_tokens',  l_rt);
+      l_usage_disp.put('total_tokens',      l_tt);
+      l_usage_disp.put('tool_calls',        l_tc);
+      l_usage_disp.put('model',             nvl(l_result.get_string('model'), 'gemini-2.5-flash'));
+      l_usage_disp.put('provider',          l_result.get_string('provider'));
+      l_usage_disp.put('created_at',
+        to_char(systimestamp at time zone 'UTC', 'YYYY-MM-DD') || ' ~' ||
+        to_char(systimestamp at time zone 'UTC', 'HH24:MI') || ' UTC'
+      );
+    end if;
 
     -- Persist the FULL API messages array returned by UC AI.
     -- This preserves tool call/result history between turns, as recommended by docs.
@@ -695,6 +785,9 @@ create or replace package body uc_ai_data as
     l_disp_msg := json_object_t();
     l_disp_msg.put('role',    'assistant');
     l_disp_msg.put('content', l_response);
+    if l_usage_disp is not null then
+      l_disp_msg.put('usage', l_usage_disp);
+    end if;
     l_display.append(l_disp_msg);
 
     -- Save both display and full API history in session state
